@@ -5,11 +5,9 @@ channels:
       - pytorch
 dependencies:
       - python>=3.9
-      - nvidia::cudatoolkit=11.5
+      - nvidia::cudatoolkit>=11.5
       - pytorch::pytorch
       - numpy
       - matplotlib
       - pandas
       - pip
-      - pip:
-      - arcade
