@@ -1,12 +1,13 @@
 import random
 import numpy as np
-from torch import nn, optim
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
 from collections import deque, OrderedDict
 
-
-from scores.score_logger import ScoreLogger
-
-ENV_NAME = "CartPole-v1"
+# Device selection
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 GAMMA = 0.95
 LEARNING_RATE = 0.001
@@ -14,43 +15,55 @@ LEARNING_RATE = 0.001
 MEMORY_SIZE = 1000000
 BATCH_SIZE = 20
 
-EXPLORATION_MAX = 1.0
+EXPLORATION_MAX = 0.5
 EXPLORATION_MIN = 0.01
 EXPLORATION_DECAY = 0.995
-
-
-class DQNSolver:
-
+#Action space (right, bot, left, top)
+#Observ (posX, posY, stopX, stopY, sX, sY, values)
+class DQN(nn.Module):
+ 
     def __init__(self, observation_space, action_space):
+        super(DQN, self).__init__()
         self.exploration_rate = EXPLORATION_MAX
 
         self.action_space = action_space
+
         self.memory = deque(maxlen=MEMORY_SIZE)
 
         self.sequence = OrderedDict()
-        self.sequence['linear1'] = nn.Linear(24, (observation_space,))
-        self.sequence['Relu1'] = nn.Relu()
-        self.sequence['linear2'] = nn.Linear((observation_space,), 24)
-        self.sequence['Relu2'] = nn.Relu()
-        self.sequence['linear3'] = nn.Linear(24, self.action_space)
+        self.sequence['linear1'] = nn.Linear(observation_space, 128)
+        self.sequence['Relu1'] = nn.ReLU()
+        self.sequence['linear2'] = nn.Linear(128, 128)
+        self.sequence['Relu2'] = nn.ReLU()
+        self.sequence['sigmoid'] = nn.Linear(128, action_space)
 
         self.model = nn.Sequential(self.sequence)
 
         self.costFunction = nn.MSELoss()
+        self.losses = []
 
-        self.optimizer = optim.Adam(lr=LEARNING_RATE)
-
-        
-
+        self.optimizer = optim.Adam(self.model.parameters(), lr=LEARNING_RATE)
+    
     def remember(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
 
-    def act(self, state):
+    def predict(self, state):
         if np.random.rand() < self.exploration_rate:
             return random.randrange(self.action_space)
-        q_values = self.model(state)
-        return np.argmax(q_values[0])
-
+        q_values = self.model(torch.tensor(state).float())
+        return torch.argmax(q_values)
+    
+    def act(self, predict):
+        match predict:
+            case 0:
+                return [1, 0]
+            case 1:
+                return [0, 1]
+            case 2:
+                return [-1, 0]
+            case 3:
+                return [0, -1]
+            
     def experience_replay(self):
         if len(self.memory) < BATCH_SIZE:
             return
@@ -58,41 +71,65 @@ class DQNSolver:
         for state, action, reward, state_next, terminal in batch:
             q_update = reward
             if not terminal:
-                q_update = (reward + GAMMA * np.amax(self.model(state_next)[0]))
-            q_values = self.model(state)
-            q_values[0][action] = q_update
-            self.model.fit(state, q_values, verbose=0)
+                q_update = (reward + GAMMA * torch.amax(self.model(torch.tensor(state_next).float())), 0)
+            q_values = self.model(torch.tensor(state).float()).detach().numpy()
+            qVal = q_values
+            qVal[action] = q_update
+
+            loss = self.costFunction(q_values, qVal)
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.losses.append(loss.item())
+            self.optimizer.step()
+
         self.exploration_rate *= EXPLORATION_DECAY
         self.exploration_rate = max(EXPLORATION_MIN, self.exploration_rate)
 
 
-def cartpole():
-    env = gym.make(ENV_NAME)
-    score_logger = ScoreLogger(ENV_NAME)
-    observation_space = env.observation_space.shape[0]
-    action_space = env.action_space.n
-    dqn_solver = DQNSolver(observation_space, action_space)
+def learn(dqn, map, display):
+    # Initialize run counter
     run = 0
+    # Initialize run counter
+    scoreLog = []
+    # Loop through tries
     while True:
         run += 1
-        state = env.reset()
-        state = np.reshape(state, [1, observation_space])
-        step = 0
+        # Build new map
+        map.refresh()
+        # Initialize state
+        state = map.initialState()
+        # Initialize step counter
+        step, score = 0, 0
+        # Loop through step until current try is not terminate
         while True:
             step += 1
-            #env.render()
-            action = dqn_solver.act(state)
-            state_next, reward, terminal, info = env.step(action)
+            print(state[0]*(map.sX-1), state[1]*(map.sY-1))
+            # show env
+            display.refresh(map)
+            # Predict the action thanks to predict function
+            prediction = dqn.predict(state)
+            print(prediction)
+            # Define the action thanks to act function
+            action = dqn.act(prediction)
+            # Get the new state info
+            state_next, reward, terminal = map.walk(state, action)
+            print(state_next[0], state_next[1])
+            # global score
+            score += reward
+            # Do not add final reward if terminate
             reward = reward if not terminal else -reward
-            state_next = np.reshape(state_next, [1, observation_space])
-            dqn_solver.remember(state, action, reward, state_next, terminal)
+            # Gather the evenment suite to replay later
+            dqn.remember(state, prediction, reward, state_next, terminal)
+            # Change state to new state
             state = state_next
+            # If terminal, display some logs
             if terminal:
-                print("Run: " + str(run) + ", exploration: " + str(dqn_solver.exploration_rate) + ", score: " + str(step))
-                score_logger.add_score(step, run)
+                print("Run: " + str(run) + ", exploration: " + str(dqn.exploration_rate) + ", score: " + str(step))
+                scoreLog.append([step, run, score])
                 break
-            dqn_solver.experience_replay()
+            # Else, replay a previous experience
+            dqn.experience_replay()
 
+            print(score)
+            
 
-if __name__ == "__main__":
-    cartpole()
