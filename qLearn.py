@@ -6,16 +6,13 @@ import torch.optim as optim
 import torch.nn.functional as F
 from collections import deque, OrderedDict
 
-# Device selection
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-GAMMA = 0.95
+GAMMA = 0.9
 LEARNING_RATE = 0.001
 
 MEMORY_SIZE = 1000000
-BATCH_SIZE = 20
+BATCH_SIZE = 16
 
-EXPLORATION_MAX = 0.5
+EXPLORATION_MAX = 1.0
 EXPLORATION_MIN = 0.01
 EXPLORATION_DECAY = 0.995
 #Action space (right, bot, left, top)
@@ -35,7 +32,7 @@ class DQN(nn.Module):
         self.sequence['Relu1'] = nn.ReLU()
         self.sequence['linear2'] = nn.Linear(128, 128)
         self.sequence['Relu2'] = nn.ReLU()
-        self.sequence['sigmoid'] = nn.Linear(128, action_space)
+        self.sequence['linear3'] = nn.Linear(128, action_space)
 
         self.model = nn.Sequential(self.sequence)
 
@@ -49,9 +46,9 @@ class DQN(nn.Module):
 
     def predict(self, state):
         if np.random.rand() < self.exploration_rate:
-            return random.randrange(self.action_space)
+            return np.asarray(random.randrange(self.action_space))
         q_values = self.model(torch.tensor(state).float())
-        return torch.argmax(q_values)
+        return torch.argmax(q_values).detach().numpy()
     
     def act(self, predict):
         match predict:
@@ -71,28 +68,32 @@ class DQN(nn.Module):
         for state, action, reward, state_next, terminal in batch:
             q_update = reward
             if not terminal:
-                q_update = (reward + GAMMA * torch.amax(self.model(torch.tensor(state_next).float())), 0)
+                tensor_update = reward + GAMMA * torch.amax(self.model(torch.tensor(state_next).float()))
+                q_update = tensor_update.real 
             q_values = self.model(torch.tensor(state).float()).detach().numpy()
-            qVal = q_values
+            qVal = np.copy(q_values)
             qVal[action] = q_update
-
-            loss = self.costFunction(q_values, qVal)
+            qVal[qVal < 0] = 0
+            
+            loss = self.costFunction(torch.tensor(q_values), torch.tensor(qVal))
+            loss.requires_grad = True
+            self.losses.append(loss.item())
             self.optimizer.zero_grad()
             loss.backward()
-            self.losses.append(loss.item())
             self.optimizer.step()
 
         self.exploration_rate *= EXPLORATION_DECAY
         self.exploration_rate = max(EXPLORATION_MIN, self.exploration_rate)
 
 
-def learn(dqn, map, display):
+def learn(dqn, map, display, epoch=10000):
     # Initialize run counter
     run = 0
     # Initialize run counter
     scoreLog = []
     # Loop through tries
     while True:
+        if (run >= epoch) : return dqn.losses
         run += 1
         # Build new map
         map.refresh()
@@ -103,33 +104,33 @@ def learn(dqn, map, display):
         # Loop through step until current try is not terminate
         while True:
             step += 1
-            print(state[0]*(map.sX-1), state[1]*(map.sY-1))
+            if (step >= 2*map.sX*map.sY): break
+            #print("position :", state[0]*(map.sX-1), state[1]*(map.sY-1))
             # show env
-            display.refresh(map)
+            #if(not(step%1)): display.refresh(map)
             # Predict the action thanks to predict function
             prediction = dqn.predict(state)
-            print(prediction)
+            #print("Prediction :", prediction)
             # Define the action thanks to act function
             action = dqn.act(prediction)
             # Get the new state info
             state_next, reward, terminal = map.walk(state, action)
-            print(state_next[0], state_next[1])
+            #print("New position :", state_next[0], state_next[1])
             # global score
             score += reward
             # Do not add final reward if terminate
-            reward = reward if not terminal else -reward
+            #reward = reward if not terminal else -reward
             # Gather the evenment suite to replay later
             dqn.remember(state, prediction, reward, state_next, terminal)
             # Change state to new state
             state = state_next
             # If terminal, display some logs
             if terminal:
-                print("Run: " + str(run) + ", exploration: " + str(dqn.exploration_rate) + ", score: " + str(step))
+                print("Run: " + str(run) + ", exploration: " + str(dqn.exploration_rate) + ", score: " + str(score))
                 scoreLog.append([step, run, score])
                 break
             # Else, replay a previous experience
-            dqn.experience_replay()
-
-            print(score)
+            if(not(run%3)):
+                dqn.experience_replay()
             
 

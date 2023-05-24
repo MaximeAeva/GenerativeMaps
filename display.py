@@ -50,14 +50,14 @@ class display():
                     self.drawARect(x, y, facecolor = 'blue')
                 case "treasure":
                     self.drawARect(x, y, facecolor = 'yellow')
-                case "player":
-                    self.drawACircle(x, y, 1)
 
             for i, j in zip(borderX, borderY):
                 self.drawAWall(i, j)
             for i, j in zip(invBorderX, invBorderY):
                 self.drawAWall(i, j, 'k-')
         
+        self.drawACircle(self.factor*map.playerX, -self.factor*map.playerY, 1)
+
         plt.xticks([])
         plt.yticks([])
         ax = plt.gca()
